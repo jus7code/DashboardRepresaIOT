@@ -1,0 +1,102 @@
+name: represa-iot
+
+x-device-env: &device-env
+  MQTT_HOST: mosquitto
+  MQTT_PORT: "1883"
+  MQTT_USER: ${MQTT_USER}
+  MQTT_PASS: ${MQTT_PASS}
+  BACKEND_URL: http://backend:8000
+  INGEST_KEY: ${INGEST_KEY}
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [backend, mosquitto]
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    ports: ["1883:1883"]
+    environment:
+      MQTT_USER: ${MQTT_USER}
+      MQTT_PASS: ${MQTT_PASS}
+    entrypoint: ["/bin/sh", "/mosquitto/config/entrypoint.sh"]
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./mosquitto/entrypoint.sh:/mosquitto/config/entrypoint.sh:ro
+      - mosquitto_data:/mosquitto/data
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: represa
+      POSTGRES_USER: represa
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U represa -d represa"]
+      interval: 5s
+      retries: 20
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://represa:${POSTGRES_PASSWORD}@db:5432/represa
+      MQTT_HOST: mosquitto
+      MQTT_PORT: "1883"
+      MQTT_USER: ${MQTT_USER}
+      MQTT_PASS: ${MQTT_PASS}
+      INGEST_KEY: ${INGEST_KEY}
+      ADMIN_TOKEN: ${ADMIN_TOKEN}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    depends_on:
+      db: { condition: service_healthy }
+      mosquitto: { condition: service_started }
+
+  twins:
+    build: ./devices
+    restart: unless-stopped
+    command: ["python", "twins.py"]
+    environment:
+      <<: *device-env
+      TWIN_INTERVAL: "15"
+    depends_on: [backend]
+
+  api-bridge:
+    build: ./devices
+    restart: unless-stopped
+    command: ["python", "api_bridge.py"]
+    environment:
+      <<: *device-env
+      AZURE_MAPS_KEY: ${AZURE_MAPS_KEY}
+      AZURE_MAPS_LAT: ${AZURE_MAPS_LAT:-7.0170}
+      AZURE_MAPS_LON: ${AZURE_MAPS_LON:--73.4160}
+      API_INTERVAL: "300"
+    depends_on: [backend]
+
+  dataset:
+    build: ./devices
+    restart: unless-stopped
+    command: ["python", "dataset_player.py"]
+    environment:
+      <<: *device-env
+      DATASET_INTERVAL: "60"
+    depends_on: [backend]
+
+volumes:
+  caddy_data:
+  caddy_config:
+  mosquitto_data:
+  pg_data:

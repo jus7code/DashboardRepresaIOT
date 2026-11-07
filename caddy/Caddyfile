@@ -1,0 +1,13 @@
+# Proxy inverso con HTTPS automático (Let's Encrypt) para el dominio propio.
+# DOMAIN=":80" sirve en HTTP plano para pruebas locales.
+{$DOMAIN} {
+	encode gzip
+
+	handle /mqtt* {
+		reverse_proxy mosquitto:9001
+	}
+
+	handle {
+		reverse_proxy backend:8000
+	}
+}
